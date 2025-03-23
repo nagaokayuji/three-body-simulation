@@ -5,6 +5,7 @@ use std::ops::{Add, Div, Mul, Sub};
 use ggez::mint;
 
 const G: f32 = 1.0;
+const MAX_TRAIL_LENGTH: usize = 3000; // Limit trail length to prevent memory leaks
 
 #[derive(Debug, Clone, Copy)]
 struct Vec2 {
@@ -78,6 +79,8 @@ struct Body {
 struct Simulation {
     bodies: Vec<Body>,
     dt: f32,
+    min_dt: f32,
+    max_dt: f32,
     accumulator: f32,
 }
 
@@ -108,6 +111,8 @@ impl Simulation {
                 },
             ],
             dt: 0.01,
+            min_dt: 0.001, // Minimum timestep for numerical stability
+            max_dt: 0.05,  // Maximum timestep for performance
             accumulator: 0.0,
         }
     }
@@ -142,6 +147,36 @@ impl Simulation {
             body.vel = body.vel + (acc_old[i] + acc_new[i]) * (0.5 * dt);
             let pos = body.pos;
             body.trail.push(pos);
+
+            // Prevent memory leak by limiting trail length
+            if body.trail.len() > MAX_TRAIL_LENGTH {
+                body.trail.remove(0);
+            }
+        }
+    }
+    fn adjust_timestep(&mut self) {
+        let mut min_distance = f32::MAX;
+        let n = self.bodies.len();
+
+        // Find minimum distance between any two bodies
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let diff = self.bodies[j].pos - self.bodies[i].pos;
+                let distance = diff.magnitude();
+                min_distance = min_distance.min(distance);
+            }
+        }
+
+        // Adjust timestep based on minimum distance (closer bodies need smaller timesteps)
+        // This is a simple heuristic - could be refined further
+        if min_distance < 5.0 {
+            self.dt = self.min_dt; // Use minimum timestep for very close bodies
+        } else if min_distance > 50.0 {
+            self.dt = self.max_dt; // Use maximum timestep when bodies are far apart
+        } else {
+            // Linear interpolation between min_dt and max_dt based on distance
+            let t = (min_distance - 5.0) / 45.0; // Normalized distance (0.0 to 1.0)
+            self.dt = self.min_dt + t * (self.max_dt - self.min_dt);
         }
     }
 }
@@ -151,13 +186,16 @@ impl event::EventHandler for Simulation {
         let delta = ctx.time.delta().as_secs_f32();
         let speed_factor = 500.0;
         self.accumulator += delta * speed_factor;
+
+        // Adaptive timestep - adjust dt based on body proximity
+        self.adjust_timestep();
+
         while self.accumulator >= self.dt {
             self.step();
             self.accumulator -= self.dt;
         }
         Ok(())
     }
-
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
         let mut canvas =
             graphics::Canvas::from_frame(ctx, graphics::Color::from_rgb(255, 255, 255));
